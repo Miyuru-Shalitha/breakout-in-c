@@ -1,4 +1,4 @@
-# Breakout clone in C.
+# Breakout clone in C/C++.
 
 ## How to build for windows.
 - Open a visual studio developer powershell or commandpromt.
