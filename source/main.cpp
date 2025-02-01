@@ -107,11 +107,30 @@ internal Vec2 normalize_vec2(const Vec2& vector)
     return (vector / length);
 }
 
+// TODO(Miyuru): I need to change this color to a sprite or somthing.
+// We do not need plain color, because sprite can have a single color if necessery.
 struct Entity
 {
     Vec2 position;
     Vec2 size;
     Color color;
+};
+
+enum Layer_Type
+{
+    LAYER_TYPE_BACKGROUND,
+    LAYER_TYPE_GROUND,
+    LAYER_TYPE_FORGROUND,
+
+    LAYER_TYPE_COUNT
+};
+
+struct Tile
+{
+    Vec2 position;
+    Vec2 size;
+    Color color;
+    i32 layer;
 };
 
 enum Scene_Type
@@ -136,6 +155,7 @@ enum Key_Code
 
 void load_scene(Scene_Type scene);
 void quit_game();
+void set_camera_follow_target(Vec2 position);
 
 #include "main_menu.cpp"
 #include "level_one.cpp"
@@ -143,8 +163,12 @@ void quit_game();
 global_variable Scene_Type global_active_scene;
 global_variable Entity* global_entities;
 global_variable i32 global_entity_count;
+global_variable Tile* global_tiles;
+global_variable i32 global_tile_count;
 global_variable bool key_downs[KEY_CODE_COUNT];
 global_variable bool global_running = true;
+global_variable Vec2 global_camera_position;
+global_variable f32 global_dt;
 
 internal void load_scene(Scene_Type scene)
 {
@@ -156,18 +180,25 @@ internal void quit_game()
     global_running = false;
 }
 
+// TODO(Miyuru): Make this follow the target smoothly.
+internal void set_camera_follow_target(Vec2 position)
+{
+    global_camera_position = position;
+}
+
 i32 main(i32 argc, char* argv[])
 {
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
     {
         printf("%s\n", SDL_GetError());
+
         return 1;
     }
 
     const i32 WINDOW_WIDTH = 1280;
     const i32 WINDOW_HEIGHT = 720;
-    i32 client_width = 0;
-    i32 client_height = 0;
+    const i32 TILE_SIZE = 16;
+    const i32 HORIZONTAL_TILE_COUNT = 40;
 
     SDL_Window* window = SDL_CreateWindow("Paradox Breakout",
              SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -177,9 +208,13 @@ i32 main(i32 argc, char* argv[])
     if (!window)
     {
         printf("%s\n", SDL_GetError());
+
         return 1;
     }
 
+    // I also recalculated client_width and client_height below, if the window sized changed.
+    i32 client_width = 0;
+    i32 client_height = 0;
     SDL_GetWindowSize(window, &client_width, &client_height);
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -187,6 +222,7 @@ i32 main(i32 argc, char* argv[])
     if (!renderer)
     {
         printf("%s\n", SDL_GetError());
+
         return 1;
     }
 
@@ -198,7 +234,7 @@ i32 main(i32 argc, char* argv[])
     {
         // Calculate delta time.
         clock_t current_time = clock();
-        f32 dt = (f32)(current_time - last_time) / CLOCKS_PER_SEC;
+        global_dt = (f32)(current_time - last_time) / CLOCKS_PER_SEC;
         last_time = current_time;
 
         while (SDL_PollEvent(&event) != 0)
@@ -280,30 +316,58 @@ i32 main(i32 argc, char* argv[])
                 }
             }
 
-            // TODO(Miyuru): Set client dimentions only checking the window resized event.
+            // We have to recalculate the client_width and client_height if the window resized.
+            // Otherwise game will not be stretched correctly.
             if (event.type == SDL_WINDOWEVENT)
             {
-                SDL_GetWindowSize(window, &client_width, &client_height);
+                if (event.window.event == SDL_WINDOWEVENT_RESIZED)
+                {
+                    SDL_GetWindowSize(window, &client_width, &client_height);
+                }
             }
         }
 
-        f32 tile_size = client_width / 40.0f;
+        // I added these things here, bacause the client_width and client_height will be recalculated
+        // if the window is resized.
+        i32 game_width = (i32)((f32)HORIZONTAL_TILE_COUNT * (f32)TILE_SIZE);
+        i32 game_height = (i32)(((f32)client_height / (f32)client_width) * (f32)game_width);
+        f32 pixel_size = (f32)client_width / (f32)game_width;
 
+        // Update the relevent scene.
         switch (global_active_scene)
         {
             case SCENE_TYPE_MAIN_MENU:
             {
-                update_main_menu(dt, &global_entities, &global_entity_count, tile_size, key_downs);
+                update_main_menu(global_dt, &global_entities, &global_entity_count, (f32)TILE_SIZE, key_downs);
             } break;
 
             case SCENE_TYPE_LEVEL_ONE:
             {
-                update_level_one(dt, &global_entities, &global_entity_count, tile_size, key_downs);
+                update_level_one(global_dt,
+                                 &global_entities, &global_entity_count,
+                                 &global_tiles, &global_tile_count,
+                                 (f32)TILE_SIZE, key_downs);
             } break;
         }
 
+        // Clear screen.
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
+
+        // Draw tiles.
+        for (i32 i = 0; i < global_tile_count; i++)
+        {
+            Tile tile = global_tiles[i];
+            Color color = tile.color;
+            SDL_FRect rect = {
+                .x = (tile.position.x + game_width * 0.5f - global_camera_position.x) * pixel_size,
+                .y = (tile.position.y + game_height * 0.5f - global_camera_position.y) * pixel_size,
+                .w = tile.size.x * pixel_size,
+                .h = tile.size.y * pixel_size
+            };
+            SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+            SDL_RenderDrawRectF(renderer, &rect);
+        }
 
         // Draw entities.
         for (i32 i = 0; i < global_entity_count; i++)
@@ -311,10 +375,10 @@ i32 main(i32 argc, char* argv[])
             Entity entity = global_entities[i];
             Color color = entity.color;
             SDL_FRect rect = {
-                .x = entity.position.x,
-                .y = entity.position.y,
-                .w = entity.size.x,
-                .h = entity.size.y
+                .x = (entity.position.x + game_width * 0.5f - global_camera_position.x) * pixel_size,
+                .y = (entity.position.y + game_height * 0.5f - global_camera_position.y) * pixel_size,
+                .w = entity.size.x * pixel_size,
+                .h = entity.size.y * pixel_size
             };
             SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
             SDL_RenderFillRectF(renderer, &rect);
